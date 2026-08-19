@@ -66,6 +66,7 @@ type Lease struct {
 	AgentID           string
 	Run               *runs.Run
 	SessionInstanceID string       // "" when the session is disabled
+	SessionModel      string       // actual model the upstream session is locked to
 	TierAccess        string       // upstream accessTier, "" when unknown
 	TierCountry       string       // upstream countryCode, "" when unknown
 	Bridge            *bridgeEntry // nil for pooled (fixed-token) leases
@@ -352,33 +353,43 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 			continue
 		}
 
-		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
-		if err != nil {
-			if errors.Is(err, upstream.ErrAuthRejected) {
-				tok.runs.Cooldown(runs.DefaultCooldown)
-				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
-			}
-			var wr *session.WaitingRoomError
-			if errors.As(err, &wr) {
-				waiting = append(waiting, wr)
-			}
-			if rle := asRateLimit(err); rle != nil {
-				tok.runs.CooldownRateLimit(rle)
-				rateLimited = append(rateLimited, rle)
-			}
-			if be := asBan(err); be != nil {
-				tok.runs.CooldownBan(be)
-				banned = append(banned, be)
-			}
-			if cbe := asCountryBlocked(err); cbe != nil {
-				tok.runs.CooldownCountryBlocked(cbe)
-				countryBlocked = append(countryBlocked, cbe)
-			}
-			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
-			continue
+	instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
+	if err != nil {
+		if errors.Is(err, upstream.ErrAuthRejected) {
+			tok.runs.Cooldown(runs.DefaultCooldown)
+			p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
 		}
+		var wr *session.WaitingRoomError
+		if errors.As(err, &wr) {
+			waiting = append(waiting, wr)
+		}
+		if rle := asRateLimit(err); rle != nil {
+			tok.runs.CooldownRateLimit(rle)
+			rateLimited = append(rateLimited, rle)
+		}
+		if be := asBan(err); be != nil {
+			tok.runs.CooldownBan(be)
+			banned = append(banned, be)
+		}
+		if cbe := asCountryBlocked(err); cbe != nil {
+			tok.runs.CooldownCountryBlocked(cbe)
+			countryBlocked = append(countryBlocked, cbe)
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+		continue
+	}
 
-		run, err := tok.runs.Acquire(ctx, agentID)
+	// If the upstream assigned a different model than requested, resolve the
+	// correct agent for the session's actual model.
+	sessSnap := tok.session.Snapshot()
+	if sessSnap.Model != "" && sessSnap.Model != model {
+		sessAgentID, _ := p.reg.AgentForModel(sessSnap.Model)
+		if sessAgentID != "" {
+		agentID = sessAgentID
+		}
+	}
+
+	run, err := tok.runs.Acquire(ctx, agentID)
 		if err != nil {
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
@@ -409,7 +420,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		p.idleFinished = false
 		p.lastActiveMu.Unlock()
 		return &Lease{Token: idx, AgentID: agentID, Run: run, SessionInstanceID: instanceID,
-			TierAccess: ss.TierAccess, TierCountry: ss.TierCountry}, nil
+			SessionModel: ss.Model, TierAccess: ss.TierAccess, TierCountry: ss.TierCountry}, nil
 	}
 
 	// Failover precedence (PRD §6 error matrix): when buckets are mixed the
@@ -604,7 +615,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	p.logger.Debug("pool: bridge lease acquired", "model", model, "agent", agentID, "instance_id", instanceID,
 		"tier", ss.TierAccess, "country", ss.TierCountry)
 	return &Lease{Token: -1, AgentID: agentID, Run: run, SessionInstanceID: instanceID,
-		TierAccess: ss.TierAccess, TierCountry: ss.TierCountry, Bridge: entry}, nil
+		SessionModel: ss.Model, TierAccess: ss.TierAccess, TierCountry: ss.TierCountry, Bridge: entry}, nil
 }
 
 // LeaseRelease decrements the leased run's inflight counter. Call when the

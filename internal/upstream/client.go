@@ -1295,6 +1295,11 @@ func injectEnvelope(body []byte, costMode string, opts ChatOptions) ([]byte, err
 
 	ensureCliSystemMarker(payload)
 
+	// Override the model in the body to match the session's actual model.
+	if opts.Model != "" {
+		payload["model"] = opts.Model
+	}
+
 	metadata := map[string]any{
 		"run_id":    opts.RunID,
 		"client_id": generateClientID(),
