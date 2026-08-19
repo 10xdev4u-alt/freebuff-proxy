@@ -1811,11 +1811,27 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		"stream", stream)
 
 	if stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
 		if err := convert.WriteClaudeStreamingResponseFromReader(w, up, rawModel); err != nil {
 			s.logger.Debug("claude stream write failed", "err", err)
 		}
 	} else {
-		if err := convert.WriteClaudeNonStreamResponseFromReader(w, up); err != nil {
+		// Accumulate SSE chunks into a single JSON response, then convert to Claude format.
+		acc := convert.NewAccumulator()
+		scanner := bufio.NewScanner(up)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			if ctx.Err() != nil {
+				return
+			}
+			_ = acc.Add(scanner.Bytes())
+		}
+		openAIJSON := acc.Finish()
+		w.Header().Set("Content-Type", "application/json")
+		if err := convert.WriteClaudeNonStreamResponseFromReader(w, bytes.NewReader(openAIJSON)); err != nil {
 			s.logger.Debug("claude non-stream write failed", "err", err)
 		}
 	}
