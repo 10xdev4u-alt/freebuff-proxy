@@ -206,7 +206,7 @@ func TestWriteClaudePassthroughError_JSON(t *testing.T) {
 	WriteClaudePassthroughError(w, 429, upstream)
 
 	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	errObj := resp["error"].(map[string]any)
 	if errObj["type"] != "rate_limit_error" {
 		t.Errorf("error type = %v, want rate_limit_error", errObj["type"])
@@ -218,7 +218,7 @@ func TestWriteClaudePassthroughError_PlainText(t *testing.T) {
 	WriteClaudePassthroughError(w, 500, []byte("internal server error"))
 
 	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	errObj := resp["error"].(map[string]any)
 	if errObj["type"] != "api_error" {
 		t.Errorf("error type = %v, want api_error", errObj["type"])
@@ -336,7 +336,7 @@ func TestStreamConversion_ToolCalls(t *testing.T) {
 	for _, e := range events1 {
 		if e.Name == "content_block_start" {
 			var payload map[string]any
-			json.Unmarshal(e.Payload, &payload)
+			_ = json.Unmarshal(e.Payload, &payload)
 			cb := payload["content_block"].(map[string]any)
 			if cb["type"] == "tool_use" {
 				foundToolStart = true
@@ -393,7 +393,7 @@ func TestStreamConversion_ToolCalls(t *testing.T) {
 	for _, e := range events3 {
 		if e.Name == "content_block_delta" {
 			var payload map[string]any
-			json.Unmarshal(e.Payload, &payload)
+			_ = json.Unmarshal(e.Payload, &payload)
 			if payload["delta"] != nil {
 				delta := payload["delta"].(map[string]any)
 				if delta["type"] == "input_json_delta" {
@@ -586,7 +586,7 @@ func TestWriteClaudeNonStreamResponse(t *testing.T) {
 	}
 
 	var claude map[string]any
-	json.Unmarshal(w.Body.Bytes(), &claude)
+	_ = json.Unmarshal(w.Body.Bytes(), &claude)
 	if claude["type"] != "message" {
 		t.Errorf("type = %v, want message", claude["type"])
 	}
