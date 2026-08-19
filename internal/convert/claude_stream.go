@@ -11,6 +11,12 @@ import (
 	"strings"
 )
 
+var (
+	clDataPrefix = []byte("data:")
+	clDoneToken  = []byte("[DONE]")
+	clColon      = []byte(":")
+)
+
 // --- OpenAI response types for Claude conversion ---
 
 type openAIChatCompletion struct {
@@ -218,56 +224,7 @@ func WriteClaudeStreamingResponse(w http.ResponseWriter, resp *http.Response, re
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(resp.StatusCode)
 
-	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(resp.Body)
-	state := NewClaudeStreamState(requestedModel)
-
-	sawDone := false
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			trimmed := bytes.TrimSpace(line)
-			if len(trimmed) > 0 && !bytes.HasPrefix(trimmed, []byte(":")) && bytes.HasPrefix(trimmed, []byte("data:")) {
-				payload := bytes.TrimSpace(trimmed[5:])
-				if bytes.Equal(payload, []byte("[DONE]")) {
-					sawDone = true
-				}
-
-				events, convErr := ConvertOpenAIStreamPayloadToClaudeEvents(payload, state)
-				if convErr != nil {
-					return convErr
-				}
-				if err := WriteClaudeSSEEvents(w, events); err != nil {
-					return err
-				}
-				if flusher != nil && len(events) > 0 {
-					flusher.Flush()
-				}
-			}
-		}
-
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-	}
-
-	if !sawDone {
-		events, err := FinalizeClaudeStream(state)
-		if err != nil {
-			return err
-		}
-		if err := WriteClaudeSSEEvents(w, events); err != nil {
-			return err
-		}
-		if flusher != nil && len(events) > 0 {
-			flusher.Flush()
-		}
-	}
-
-	return nil
+	return convertAndRelayStream(w, bufio.NewReader(resp.Body), requestedModel)
 }
 
 // WriteClaudeStreamingResponseFromReader reads an OpenAI SSE stream from
@@ -275,8 +232,14 @@ func WriteClaudeStreamingResponse(w http.ResponseWriter, resp *http.Response, re
 // WriteClaudeStreamingResponse, it does not set headers or write a status
 // code, allowing the caller to control those.
 func WriteClaudeStreamingResponseFromReader(w http.ResponseWriter, r io.Reader, requestedModel string) error {
+	return convertAndRelayStream(w, bufio.NewReader(r), requestedModel)
+}
+
+// convertAndRelayStream is the shared implementation for both streaming
+// response writers. It reads SSE lines from reader, converts OpenAI chunks
+// to Claude events, and writes them to w.
+func convertAndRelayStream(w http.ResponseWriter, reader *bufio.Reader, requestedModel string) error {
 	flusher, _ := w.(http.Flusher)
-	reader := bufio.NewReader(r)
 	state := NewClaudeStreamState(requestedModel)
 
 	sawDone := false
@@ -284,9 +247,9 @@ func WriteClaudeStreamingResponseFromReader(w http.ResponseWriter, r io.Reader, 
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			trimmed := bytes.TrimSpace(line)
-			if len(trimmed) > 0 && !bytes.HasPrefix(trimmed, []byte(":")) && bytes.HasPrefix(trimmed, []byte("data:")) {
+			if len(trimmed) > 0 && !bytes.HasPrefix(trimmed, clColon) && bytes.HasPrefix(trimmed, clDataPrefix) {
 				payload := bytes.TrimSpace(trimmed[5:])
-				if bytes.Equal(payload, []byte("[DONE]")) {
+				if bytes.Equal(payload, clDoneToken) {
 					sawDone = true
 				}
 
@@ -350,7 +313,7 @@ func WriteClaudeNonStreamResponseFromReader(w http.ResponseWriter, r io.Reader) 
 // ConvertOpenAIStreamPayloadToClaudeEvents converts a single OpenAI SSE
 // data payload (or [DONE]) into zero or more Claude SSE events.
 func ConvertOpenAIStreamPayloadToClaudeEvents(payload []byte, state *ClaudeStreamState) ([]ClaudeSSEEvent, error) {
-	if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+	if bytes.Equal(bytes.TrimSpace(payload), clDoneToken) {
 		return FinalizeClaudeStream(state)
 	}
 
