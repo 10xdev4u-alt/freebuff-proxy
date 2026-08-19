@@ -1527,8 +1527,19 @@ func (s *Server) chatAttempt(
 		return nil, nil, err
 	}
 
+	// Use the session's actual model if the upstream assigned a different one.
+	sessionModel := model
+	sessionAgentID := lease.AgentID
+	if lease.SessionModel != "" && lease.SessionModel != model {
+		sessionModel = lease.SessionModel
+		sessAgent, _ := s.reg.AgentForModel(sessionModel)
+		if sessAgent != "" {
+			sessionAgentID = sessAgent
+		}
+		s.logger.Info("using session model", "requested", model, "session", sessionModel, "agent", sessionAgentID)
+	}
 	opts := upstream.ChatOptions{
-		Model:             model,
+		Model:             sessionModel,
 		RunID:             lease.Run.RunID,
 		SessionInstanceID: lease.SessionInstanceID,
 	}
