@@ -104,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChat))
 	mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleClaudeMessages))
+	mux.HandleFunc("POST /v1/responses", s.requireAuth(s.handleResponses))
 	mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleModels))
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
@@ -1843,6 +1844,118 @@ func writeClaudeProxyError(w http.ResponseWriter, r *http.Request, err error) {
 func mustMarshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// --- Responses API ---
+
+// handleResponses accepts OpenAI Responses API requests, converts them to
+// chat-completions format, and proxies through the existing pipeline.
+func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+		s.writeJSONError(w, http.StatusRequestEntityTooLarge,
+			"request body exceeds the 32MB limit", "invalid_request_error", "content_too_large", 0)
+		} else {
+			s.writeJSONError(w, http.StatusBadRequest,
+				"failed to read request body: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+		}
+		return
+	}
+
+	converted, rawModel, stream, err := convert.ConvertResponsesToChatParams(body)
+	if err != nil {
+		s.writeJSONError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_json", 0)
+		return
+	}
+	if converted == nil {
+		s.writeJSONError(w, http.StatusBadRequest,
+			"invalid Responses API request", "invalid_request_error", "invalid_json", 0)
+		return
+	}
+
+	model := s.reg.ResolveModel(rawModel)
+	agentID, _ := s.reg.AgentForModel(model)
+	normalized, err := convert.NormalizeRequest(mustMarshal(converted), model)
+	if err != nil {
+		s.writeJSONError(w, http.StatusBadRequest,
+			"request body must be a valid JSON object: "+err.Error(), "invalid_request_error", "invalid_json", 0)
+		return
+	}
+
+	start := time.Now()
+	s.logger.Info("responses request", "model", model, "agent", agentID, "stream", stream, "remote", remoteHost(r))
+
+	var up io.ReadCloser
+	var lease *pool.Lease
+	cfg := s.cfg.Load()
+	tok := bearerToken(r)
+	bridge := false
+	switch {
+	case cfg.BridgeMode() && !cfg.HybridMode:
+		bridge = true
+		tok = clientToken(r)
+	case cfg.HybridMode:
+		bridge = tok != ""
+	}
+	if bridge {
+		if tok == "" {
+			s.writeJSONError(w, http.StatusUnauthorized,
+				"bridge mode: send your FreeBuff token as Authorization: Bearer <token>", "invalid_request_error", "missing_bearer_token", 0)
+			return
+		}
+		up, lease, err = s.chatAttempt(ctx, model, normalized,
+			func(ctx context.Context, model string) (*pool.Lease, error) {
+				return s.pool.AcquireBridge(ctx, tok, model)
+			},
+			s.pool.Chat,
+			s.pool.InvalidateBridgeSession,
+			s.pool.InvalidateBridgeRun,
+			func(l *pool.Lease) { s.pool.CooldownBridge(l, runs.DefaultCooldown) },
+			s.pool.CooldownBridgeBan,
+			s.pool.CooldownBridgeRateLimit,
+			s.pool.CooldownBridgeCountryBlocked,
+		)
+	} else {
+		up, lease, err = s.chatAttempt(ctx, model, normalized,
+			func(ctx context.Context, model string) (*pool.Lease, error) { return s.pool.Acquire(ctx, model) },
+			s.pool.Chat,
+			func(l *pool.Lease) { s.pool.InvalidateSession(l.Token) },
+			func(l *pool.Lease, agentID string) { s.pool.InvalidateRun(l.Token, agentID) },
+			func(l *pool.Lease) { s.pool.CooldownToken(l.Token, runs.DefaultCooldown) },
+			func(l *pool.Lease, be *upstream.BanError) { s.pool.CooldownTokenBan(l.Token, be) },
+			func(l *pool.Lease, rle *upstream.RateLimitError) { s.pool.CooldownTokenRateLimit(l.Token, rle) },
+			func(l *pool.Lease, cbe *upstream.CountryBlockedError) {
+				s.pool.CooldownTokenCountryBlocked(l.Token, cbe)
+			},
+		)
+	}
+	if err != nil {
+		s.traceChat(lease, model, time.Since(start).Milliseconds(), "error", chatErrClass(err))
+		s.writeError(w, r, err)
+		return
+	}
+	defer func() { _ = up.Close() }()
+	defer s.pool.LeaseRelease(lease)
+
+	s.logger.Info("responses routing", "token", tokenLabel(lease), "model", model,
+		"agent", lease.AgentID, "instance_id", lease.SessionInstanceID,
+		"stream", stream)
+
+	if stream {
+		stats := &relayStats{}
+		s.relayStream(ctx, w, up, stats)
+		s.logger.Info("responses done", chatDoneAttrs(model, lease.AgentID, true, time.Since(start).Milliseconds(), stats.chunks, stats.bytes, "")...)
+	} else {
+		stats := &relayStats{}
+		s.relayJSON(ctx, w, up, stats)
+		s.logger.Info("responses done", chatDoneAttrs(model, lease.AgentID, false, time.Since(start).Milliseconds(), 0, stats.bytes, "")...)
+	}
+	s.traceChat(lease, model, time.Since(start).Milliseconds(), "ok", "")
 }
 
 // --- models / healthz ---
