@@ -24,7 +24,7 @@ func ConvertResponsesToChatParams(body []byte) (map[string]any, string, bool, er
 
 	// Pass through fields that exist in both formats.
 	for _, key := range []string{
-		"temperature", "top_p", "tools", "tool_choice",
+		"temperature", "top_p", "tool_choice",
 		"parallel_tool_calls", "stop", "seed", "store",
 		"metadata", "user", "stream",
 	} {
