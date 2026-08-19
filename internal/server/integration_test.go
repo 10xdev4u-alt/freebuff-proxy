@@ -199,7 +199,7 @@ func TestClaudeMessagesInvalidJSON(t *testing.T) {
 	}
 
 	var errResp map[string]any
-	json.Unmarshal(data, &errResp)
+	_ = json.Unmarshal(data, &errResp)
 	if errResp["type"] != "error" {
 		t.Errorf("type = %v, want error", errResp["type"])
 	}

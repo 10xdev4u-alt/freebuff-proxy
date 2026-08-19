@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  dependency-graph: read
 
 jobs:
   dependency-review:
