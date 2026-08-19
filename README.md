@@ -59,7 +59,7 @@ For a guided walkthrough, read [Getting Started](docs/guides/getting-started.md)
 
 ## Features
 
-- **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`, and hot config reload via `POST /admin/reload`.
+- **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `POST /v1/messages` (Claude Messages API), `POST /v1/responses` (OpenAI Responses API), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`, and hot config reload via `POST /admin/reload`.
 - **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: live overview with a one-click smoke test (a real chat through the pool), runtime token management (add/remove/test on the live pool, persisted to `.env`, no restart), a pooled↔bridge mode switch, a three-step setup wizard with full diagnostics, a `.env` config editor with validation and hot-reload, a log viewer, and metrics sparklines. Login via `ADMIN_TOKEN`; htmx-driven, zero build step.
 - **Dynamic Reasoning Effort**: OpenAI `reasoning_effort` (`low`/`medium`/`high`/`max`) and Codex/Anthropic `reasoning.effort` are normalized and mapped to upstream reasoning engines.
 - **Session & Run Lifecycle**: Upstream session handshakes, model-lock recovery (`DELETE` → re-`POST`), grace draining, and idle-run finishing, all automatic.
@@ -276,6 +276,8 @@ opt out). It enables essential anti-ban protections and presets:
 | Endpoint | Auth | Description |
 |---|---|---|
 | `POST /v1/chat/completions` | `API_KEYS` (when set) | OpenAI-compatible chat, streaming and non-streaming |
+| `POST /v1/messages` | `API_KEYS` (when set) | Anthropic Claude Messages API adapter: accepts Claude-shaped requests (system blocks, tool_use/tool_result, thinking), converts to OpenAI format, proxies upstream, and converts the response back to Claude SSE events or JSON. Supports `anthropic-version` header. |
+| `POST /v1/responses` | `API_KEYS` (when set) | OpenAI Responses API adapter: accepts Responses-shaped requests (input arrays, instructions, reasoning.effort, text.format), converts to chat completions format, and proxies through the existing pipeline. |
 | `GET /v1/models` | `API_KEYS` (when set) | Model catalog from the registry (fallback at boot + live refresh). Each row carries `available`/`status`/`current_access_tier`: models outside the limited-tier allowlist (`deepseek-v4-flash`, `mimo-v2.5`) are marked `available:false, status:"region_limited"` when the token's egress region demotes it to the limited tier — `MODELS_HIDE_UNAVAILABLE=true` prunes them from the list |
 | `GET /healthz` | none | JSON: `status`, `uptime_seconds`, `models`, per-token snapshot (incl. per-model `quota` map when the last admission carried it), `bridge_tokens` |
 | `GET /metrics` | none | Prometheus text format: uptime, model count, per-token 24h messages / requests / active runs / cooldown, per-model quota (`freebuff_proxy_quota_recent` / `freebuff_proxy_quota_limit`) |
