@@ -18,6 +18,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,9 @@ var sourceFiles = []string{
 	"gemini.ts",
 	"model-config.ts",
 }
+
+// jsDelivrBase mirrors the JS fallback source for model discovery.
+const jsDelivrBase = "https://cdn.jsdelivr.net/gh/CodebuffAI/codebuff@main/common/src/constants/"
 
 // fetchTimeout mirrors the JS fetch timeout of 30000ms.
 const fetchTimeout = 30 * time.Second
@@ -154,7 +158,15 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		wg.Add(1)
 		go func(i int, src string) {
 			defer wg.Done()
-			texts[i], errs[i] = fetchText(ctx, r.client, src)
+			// Try primary source, then jsDelivr fallback (only for upstream
+			// GitHub raw sources — file:// test URLs and custom sources are
+			// not retried).
+			text, err := fetchText(ctx, r.client, src)
+			if err != nil && strings.Contains(src, "raw.githubusercontent.com") {
+				fb := jsDelivrBase + sourceFiles[i]
+				text, err = fetchText(ctx, r.client, fb)
+			}
+			texts[i], errs[i] = text, err
 		}(i, src)
 	}
 	wg.Wait()
@@ -266,6 +278,11 @@ func (r *Registry) sourceURLs() []string {
 		urls[i] = RawBase + f
 	}
 	return urls
+}
+
+// isLocalSource returns true if src is a file:// URL (test-only).
+func isLocalSource(src string) bool {
+	return strings.HasPrefix(src, "file://")
 }
 
 // fetchText GETs url with the Accept/UA headers of the JS port. Redirects are
