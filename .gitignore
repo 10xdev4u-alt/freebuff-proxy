@@ -56,3 +56,7 @@ docs/*
 .agents/
 .claude/
 skills-lock.json
+
+# ── local dev / experiments ──
+fx/
+.freebuff/
