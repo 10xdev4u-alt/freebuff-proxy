@@ -132,12 +132,30 @@ func NormalizeRequest(body []byte, modelOverride string) ([]byte, error) {
 	}
 	if _, hasEffort := out["reasoning_effort"]; !hasEffort {
 		if eff := ExtractReasoningEffort(payload); eff != "" && eff != "none" && eff != "disabled" {
-			out["reasoning_effort"] = eff
+			out["reasoning_effort"] = normalizeReasoningEffort(eff)
 		}
+	} else if eff, ok := out["reasoning_effort"].(string); ok {
+		out["reasoning_effort"] = normalizeReasoningEffort(eff)
 	}
 	normalizeRoles(out)
 	normalizeToolSchemas(out)
 	return json.Marshal(out)
+}
+
+// normalizeReasoningEffort maps non-standard reasoning_effort values to the
+// ones the upstream accepts: max|xhigh|high|medium|low|minimal|none.
+func normalizeReasoningEffort(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "max", "xhigh", "high", "medium", "low", "minimal", "none":
+		return v
+	case "enabled", "on", "true", "1", "yes":
+		return "high"
+	case "off", "false", "0", "no":
+		return "none"
+	default:
+		return "high" // safe default for unknown values
+	}
 }
 
 // normalizeRoles rewrites message role "developer" to "system" in place.
